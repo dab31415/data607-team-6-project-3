@@ -1,0 +1,139 @@
+---
+title: "Project 3"
+author: "Nick Oliver"
+output:
+  prettydoc::html_pretty:
+    theme: hpstr
+    highlight: github
+editor_options: 
+  chunk_output_type: console
+---
+
+# Project 3 Analysis
+
+## Setup
+
+### Load Libraries
+
+
+```{r results=FALSE, message=FALSE, warning=FALSE}
+library(DBI)
+library(tidyverse)
+library(ggplot2)
+library(kableExtra)
+```
+
+### Open DB connection
+
+```{r}
+dbLocation <-"/Users/t0pth4t/Downloads/CUNY/DATA607/data607-team-6-project-3/data/project3_job_skills.db"
+print(dbLocation)
+con <- dbConnect(RSQLite::SQLite(), dbname = dbLocation)
+```
+
+## Which companies require the most skills?
+
+- Select job listings grouped by company and count the number of skills required. 
+- Then select number of job listings by company. 
+- Join the two dataframes and add a column which is the mean number of skills required by taking the total number of required skills divided by the total number of listings
+- Then arrage by higest number of skills required, select to 10, and put in a table.
+
+```{r}
+companySkillsCountDf <- dbGetQuery(con, "select c.company_name, count(jls.skill) as required_skills
+from job_listing jl
+join job_listing_skill jls on jl.id = jls.job_listing_id
+join company c on c.id = jl.company_id
+group by company_name
+order by required_skills desc;
+")
+
+companyJobListingsCountDf <- dbGetQuery(con, "
+select c.company_name, count(jl.id) as number_job_listings
+from job_listing jl
+join company c on c.id = jl.company_id
+group by company_name
+order by number_job_listings desc; ")
+
+joinedDf <- left_join(companyJobListingsCountDf, companySkillsCountDf, by="company_name") %>%
+  mutate(mean_skills_per_listing = round(required_skills / number_job_listings))
+
+
+joinedDf %>% 
+  select(company_name, mean_skills_per_listing) %>% 
+  arrange(desc(mean_skills_per_listing)) %>%
+  top_n(10, mean_skills_per_listing) %>%
+  kable(caption = "Companies Requiring Most Skills", format = "html", col.names = c("Company Name", "Mean Number Skills Required")) %>% 
+  kable_styling("striped", "hover") %>% 
+  scroll_box(width = "100%")
+```
+
+### Which companies require fewest skills?
+
+- Take the same dataframe as above except arrange in reverse order and take the bottom 10 companies
+
+```{r}
+joinedDf %>% 
+  select(company_name, mean_skills_per_listing) %>% 
+  arrange(mean_skills_per_listing) %>%
+  top_n(-10,mean_skills_per_listing) %>%
+  kable(caption = "Companies Requiring Fewest Skills", format = "html", col.names = c("Company Name", "Mean Number Skills Required")) %>% 
+  kable_styling("striped", "hover") %>% 
+  scroll_box(width = "100%")
+```
+
+
+## What Companies Do Not Require The Most Popular Skill?
+
+- First find the most popular skill by counting the number of listings that require a skill and selecting the top 1
+- Next select all of the job listings and their required skills
+- Group the listing such that all the skills required by the listing are a single string in one `skills` column
+- Filter all the listings down to only listings where the `skills` column does not contain the most popular skill `Python`
+
+```{r}
+topSkillDf <- dbGetQuery(con,"select count(1), skill
+from job_listing_skill
+group by skill
+order by count(1) desc
+limit 1;")
+
+print(topSkillDf$skill)
+
+allListingsDf <- dbGetQuery(con, "select jl.id, jl.job_title, c.company_name, jls.skill, jl.salary
+from job_listing jl
+join company c on c.id = jl.company_id
+join job_listing_skill jls on jl.id = jls.job_listing_id;")
+
+groupedSkillsDf <- allListingsDf %>% group_by(id, company_name, job_title, salary) %>% summarise(skills = paste(skill, collapse = ","))
+
+
+noPythonJobsDf <- groupedSkillsDf %>% filter(!grepl("Python", skills))
+
+print(scales::percent(nrow(noPythonJobsDf) / nrow(groupedSkillsDf)))
+
+noPythonNoDataInJobTitle <- noPythonJobsDf %>% filter(grepl("Data", job_title, ignore.case=TRUE))
+
+print(scales::percent(nrow(noPythonNoDataInJobTitle) / nrow(groupedSkillsDf)))
+
+
+noPythonNoDataInJobTitle %>% 
+  arrange(company_name) %>%
+  kable(caption = "Data Jobs Not Requiring Python", format = "html",col.names = c("Id", "Company Name", "Job Title", "Salary", "Skills")) %>% 
+  kable_styling("striped", "hover") %>% 
+  scroll_box(width = "100%", height="600px")
+  
+```
+
+Roughly `28%` of the jobs do not require Python but looking at the job titles I noticed that many of the jobs were not exactly data related. For example I noticed postings for `C# Software Developer` which understandably would likely not require Python as a skill. 
+
+Filtering down the list to jobs that contain `Data` in the job title I found that only `18%` of those jobs do not require Python. 
+
+## Teardown
+
+### Close DB Connection
+
+```{r}
+dbDisconnect(con)
+```
+
+
+

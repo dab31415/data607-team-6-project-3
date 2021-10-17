@@ -1,0 +1,166 @@
+---
+title: "Project 3 - SQL"
+author: "Team 6"
+output:
+  prettydoc::html_pretty:
+    theme: hpstr
+    highlight: github
+  pdf_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+# Team 6 - Project 3 SQL
+
+This RMarkdown file contains the code to create and populate the SQLite database using the scraped data.
+
+## Load libraries
+```{r}
+# Database Interaction
+library(DBI)
+# Pulling data from GH
+library(RCurl)
+library(stringr)
+```
+
+
+## Creating Database
+
+For testing purposes use the in-memory database option. If you want to manipulate the real database comment the first line and uncomment the second line.
+```{r}
+
+#For testing use in memory DB
+con <- dbConnect(RSQLite::SQLite(), dbname = ":memory:")
+
+#Uncomment to manipulate real DB
+# con <- dbConnect(RSQLite::SQLite(), dbname = "project3_job_skills.db")
+```
+
+## Create Tables
+```{r}
+baseUrl <- "https://raw.githubusercontent.com/nolivercuny/data607-team-6-project-3/master/sql/"
+tables <- c("company", "job_listing", "job_listing_skill","job_listing_word")
+for (table in tables) {
+  fileUrl <- paste(baseUrl, table,".sql",sep = "")
+  createTableStatement <- getURL(fileUrl)
+  print(paste("Creating ", table, " table"))
+  dbSendQuery(con, createTableStatement)
+}
+```
+
+## Verify tables are created
+```{r}
+dbListTables(con)
+dbListFields(con, "job_listing")
+dbListFields(con, "company")
+dbListFields(con, "job_listing_skill")
+dbListFields(con, "job_listing_word")
+```
+
+## Populate Tables
+
+### Load Data From CSV
+```{r}
+urlfile<-"https://raw.githubusercontent.com/nolivercuny/data607-team-6-project-3/master/data/job_listings_final.csv" 
+jobdat <- read_csv(url(urlfile))
+
+#view short file summary and class
+jobdat<-data_frame(jobdat)
+```
+
+
+### Populate Company Table
+```{r}
+companiesDf <- jobdat %>% select(company_name, company_size, industry) %>% distinct() 
+companiesDf$company_name <- companiesDf$company_name %>% replace_na("unknown")
+dbWriteTable(con,"company",companiesDf, append=TRUE)
+```
+
+### Populate Job Listing Table
+```{r}
+# Remove columns that are in the company table
+jobListingDf <- jobdat %>% select(-c("company_size", "industry"))
+# Fix the one company name that is NA
+jobListingDf$company_name <- jobListingDf$company_name %>% replace_na("unknown")
+# Read companies to get company ID for joining
+companiesWithId <- dbReadTable(con,"company")
+# Join job listing with company to populate id
+# then drop company specific columns
+# rename id column to company id
+joined <- left_join(jobListingDf, companiesWithId, by="company_name") %>% 
+  select(-c("company_size", "industry","company_name")) %>%
+  rename(company_id = id)
+#write dataframe to job_listing table
+dbWriteTable(con, "job_listing", joined, append=TRUE)
+```
+
+### Populate Job Listing Word Table
+
+#### Load data into DF
+```{r}
+wordsDataUrl <- "https://raw.githubusercontent.com/nolivercuny/data607-team-6-project-3/master/data/jobdata_words.csv"
+wordsJobListingData <- read_csv(url(wordsDataUrl))
+wordsJobListingData<-data_frame(wordsJobListingData)
+```
+
+
+```{r}
+wordsDf <- wordsJobListingData %>% select(search_rank, word)
+jobListingWithId <- dbReadTable(con,"job_listing")
+joinedWords<-left_join(wordsDf, jobListingWithId, by="search_rank") %>%
+  select(id, word) %>%
+  rename(job_listing_id = id, skill = word)
+dbWriteTable(con,"job_listing_word", joinedWords, append=TRUE)
+```
+
+### Populate Job Listing Skill Table
+
+#### Load data into DF
+```{r}
+skillsDataUrl <- "https://raw.githubusercontent.com/nolivercuny/data607-team-6-project-3/master/JobSkills.csv"
+skillsData <- read_csv(url(skillsDataUrl))
+skillsDf <-data_frame(skillsData)
+```
+
+
+```{r}
+jobListingWithId <- dbReadTable(con,"job_listing")
+skillsTableDf <- data.frame(job_listing_id=integer(), skill=character())
+for (i in 1:nrow(jobListingWithId)) {
+  listing <- jobListingWithId[i,]
+  for (j in 1:nrow(skillsDf)) {
+    skill <- skillsDf[j,]
+    detected <- str_detect(listing$description, regex(paste('[^A-Z0-9]',skill,'[^A-Z0-9]',sep = ''),ignore_case = TRUE))
+    if(detected==TRUE){
+      skillsTableDf <- skillsTableDf %>% add_row(job_listing_id = listing$id, skill = skill$JobSkill)
+    }
+  }
+}
+
+dbWriteTable(con,"job_listing_skill", skillsTableDf, append=TRUE)
+```
+
+## Example Queries
+
+```{r}
+fbJobsDf <- dbGetQuery(con, "SELECT * FROM job_listing jl JOIN company c on c.id = jl.company_id JOIN job_listing_skill jls on jls.job_listing_id = jl.id where c.company_name = 'Facebook'")
+glimpse(fbJobsDf)
+```
+
+
+## Drop Tables
+
+Run this to remove the tables
+```{r}
+# removeTables <- tables <- c("job_listing_skill","job_listing","company")
+# for (table in tables) {
+#   dbRemoveTable(con, table)
+# }
+```
+
+
+## Close Connection
+```{r}
+dbDisconnect(con)
+```
+
